@@ -21,7 +21,7 @@
            DESIGN SYSTEM & VARIABLES
            ========================================= */
         :root {
-            var(--bg-canvas): #FAFAFA;
+            --bg-canvas: #FAFAFA;
             --bg-surface: #FFFFFF;
             --bg-sidebar: #F4F5F7;
             
@@ -52,7 +52,7 @@
            RESET & BASE
            ========================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: var(--font-sans); background-color: #FAFAFA; color: var(--text-primary); line-height: 1.5; -webkit-font-smoothing: antialiased; font-size: 14px; }
+        body { font-family: var(--font-sans); background-color: var(--bg-canvas); color: var(--text-primary); line-height: 1.5; -webkit-font-smoothing: antialiased; font-size: 14px; }
         button { cursor: pointer; border: none; background: none; font-family: inherit; }
         input, select, textarea { font-family: inherit; }
         a { text-decoration: none; color: inherit; }
@@ -70,7 +70,7 @@
 
         .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
         .topbar { height: 64px; background-color: var(--bg-surface); border-bottom: 1px solid var(--border-light); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; flex-shrink: 0; }
-        .content-area { flex: 1; padding: 32px; overflow-y: auto; background-color: #FAFAFA; }
+        .content-area { flex: 1; padding: 32px; overflow-y: auto; background-color: var(--bg-canvas); }
 
         /* =========================================
            UI COMPONENTS
@@ -303,7 +303,7 @@
         </main>
     </div>
 
-    <!-- MODAL FORM (TIDAK BERUBAH DARI SEBELUMNYA) -->
+    <!-- MODAL FORM -->
     <div class="modal-overlay" id="formModal">
         <div class="modal-content">
             <div class="modal-header">
@@ -403,12 +403,16 @@
         let currentUser = null;
         
         /* =========================================
-           AUTHENTICATION (MULTI USER LOGIC)
+           AUTHENTICATION & UID GENERATION
            ========================================= */
         function checkAuth() {
             const userStr = sessionStorage.getItem('dsp_user');
             if (userStr) {
                 currentUser = JSON.parse(userStr);
+                
+                // Pastikan user memiliki UID (Kondisi penjaga tambahan)
+                if(!currentUser.uid) { logout(); return; }
+
                 document.getElementById('loginScreen').style.display = 'none';
                 document.getElementById('appContainer').style.display = 'flex';
                 
@@ -425,11 +429,15 @@
         function handleLogin(e) {
             e.preventDefault();
             const name = document.getElementById('loginName').value;
-            const email = document.getElementById('loginEmail').value.toLowerCase();
+            const email = document.getElementById('loginEmail').value.toLowerCase().trim();
             const pass = document.getElementById('loginCode').value;
             
             if (pass === AUTH_CODE) {
-                const user = { name: name, email: email };
+                // Generate Safe UID dari email karena kita tidak pakai Firebase Auth Client SDK
+                // Menghilangkan karakter spesial, hasil: a-z, A-Z, 0-9
+                const safeUid = 'uid_' + btoa(email).replace(/[^a-zA-Z0-9]/g, '');
+                
+                const user = { name: name, email: email, uid: safeUid };
                 sessionStorage.setItem('dsp_user', JSON.stringify(user));
                 checkAuth();
                 showToast(`Selamat datang, ${name}`, 'success');
@@ -487,14 +495,16 @@
         }
 
         /* =========================================
-           API / CRUD OPERATIONS (MODIFIED FOR USER EMAIL)
+           API / CRUD OPERATIONS (MODIFIED FOR UID)
            ========================================= */
         async function fetchData() {
-            if(!currentUser) return;
+            // Guard clause: Cegah read jika belum login valid
+            if (!currentUser || !currentUser.uid) return;
+            
             toggleLoading(true);
             try {
-                // Tambahkan parameter email saat melakukan fetch (Read)
-                const url = `${SCRIPT_URL}?action=read&email=${encodeURIComponent(currentUser.email)}`;
+                // Gunakan parameter uid
+                const url = `${SCRIPT_URL}?action=read&uid=${encodeURIComponent(currentUser.uid)}`;
                 const response = await fetch(url);
                 const result = await response.json();
                 
@@ -520,6 +530,12 @@
         }
 
         async function saveData() {
+            // Guard clause: Cegah write jika belum login valid
+            if (!currentUser || !currentUser.uid) {
+                showToast('Akses ditolak: Silakan login ulang.', 'error');
+                return; 
+            }
+
             const form = document.getElementById('siswaForm');
             if(!form.checkValidity()) { form.reportValidity(); return; }
 
@@ -541,12 +557,13 @@
                 tahun: document.getElementById('f_tahun').value,
             };
 
-            // Sertakan 'email' di payload JSON
+            // Sertakan UID dan Email sebagai metadata
             const payload = {
                 action: id ? 'update' : 'create',
                 id: id || generateId(),
                 data: data,
-                email: currentUser.email 
+                uid: currentUser.uid, 
+                userEmail: currentUser.email // Email disimpan sebagai field data aman
             };
 
             toggleLoading(true);
@@ -572,12 +589,14 @@
         }
 
         async function deleteData(id) {
+            // Guard clause
+            if (!currentUser || !currentUser.uid) return;
             if(!confirm('Apakah Anda yakin ingin menghapus data ini?')) return;
             
             toggleLoading(true);
             try {
-                // Sertakan email untuk delete
-                const payload = { action: 'delete', id: id, email: currentUser.email };
+                // Sertakan uid untuk delete yang diarahkan secara spesifik
+                const payload = { action: 'delete', id: id, uid: currentUser.uid };
                 const response = await fetch(SCRIPT_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -733,6 +752,12 @@
         }
 
         function handleImport(e) {
+            // Guard clause
+            if (!currentUser || !currentUser.uid) {
+                showToast('Akses ditolak: Silakan login ulang.', 'error');
+                return;
+            }
+
             const file = e.target.files[0];
             if(!file) return;
             
@@ -768,8 +793,13 @@
                          const response = await fetch(SCRIPT_URL, {
                             method: 'POST',
                             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                            // Sertakan email di sini juga
-                            body: JSON.stringify({ action: 'batchCreate', dataArray: payloadArray, email: currentUser.email })
+                            // Sertakan UID dan Email
+                            body: JSON.stringify({ 
+                                action: 'batchCreate', 
+                                dataArray: payloadArray, 
+                                uid: currentUser.uid,
+                                userEmail: currentUser.email 
+                            })
                         });
                         const result = await response.json();
                         if(result.status === 'success') {
